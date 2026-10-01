@@ -68,8 +68,6 @@ make install
 
 ## Usage Examples
 
-Here are some quick and easy ways to use iTurtle with the indie-pop band **Black Kids**!
-
 ### 1. Download a Single Song with Details
 
 Grab a single track, save it to your music folder, and give it full details:
