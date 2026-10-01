@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download && go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Build iTurtle
+        shell: bash
+        run: |
+          out="iTurtle"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            out="iTurtle.exe"
+          fi
+          go build -trimpath -ldflags "-s -w -X main.version=dev" -o "${out}" ./cmd/iturtle-smart-fetcher
+          ls -l "${out}"
+
+      - name: Check install.sh syntax
+        if: runner.os != 'Windows'
+        run: bash -n scripts/install.sh
+
+      - name: Check install.ps1 syntax
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$pwd\scripts\install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) {
+            $errs | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+
+  goreleaser:
+    name: GoReleaser snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: Snapshot release (compile, package, skip publish)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
+
+      - name: Assert iTurtle artifacts
+        run: |
+          test -n "$(find dist -type f \( -name 'iTurtle' -o -name 'iTurtle.exe' \) | head -n 1)"
+          test -n "$(find dist -type f -name 'iTurtle_*_linux_amd64.tar.gz' | head -n 1)"
+          test -n "$(find dist -type f -name 'iTurtle_*_darwin_arm64.tar.gz' | head -n 1)"
+          test -n "$(find dist -type f -name 'iTurtle_*_windows_amd64.zip' | head -n 1)"
+          test -f dist/checksums.txt
+          bash -n scripts/install.sh

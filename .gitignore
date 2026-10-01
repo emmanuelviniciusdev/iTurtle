@@ -8,6 +8,8 @@
 # Go build artifacts
 ./iturtle-smart-fetcher
 iturtle-smart-fetcher.exe
+/iTurtle
+/iTurtle.exe
 *.test
 *.out
 bin/

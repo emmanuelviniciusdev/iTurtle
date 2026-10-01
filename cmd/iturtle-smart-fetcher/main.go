@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -13,7 +14,71 @@ import (
 	"iturtle-smart-fetcher/internal/tools"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		printRootUsage(stderr)
+		return 1
+	}
+
+	switch args[0] {
+	case "download":
+		return runDownload(args[1:], stdout, stderr)
+	case "about":
+		printAboutTo(stdout)
+		return 0
+	case "version":
+		printVersionTo(stdout)
+		return 0
+	case "help", "-h", "--help":
+		printRootUsage(stdout)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
+		printRootUsage(stderr)
+		return 1
+	}
+}
+
+func printRootUsage(w io.Writer) {
+	fmt.Fprintf(w, `iTurtle - download and tag music from YouTube
+
+Usage:
+  iTurtle <command> [parameters]
+
+Commands:
+  download    Download and tag music from YouTube
+  about       What iTurtle does and who created it
+  version     Print the current version
+  help        Show this help
+
+Examples:
+  iTurtle download -url https://youtube.com/watch?v=VIDEO_ID -out ./music \
+    -artist "Black Kids" -album "Partie Traumatic" -year 2008 -genre "Indie Pop"
+
+  iTurtle download -url "..." -musicbrainz-id "abc-123-def"
+
+  iTurtle download -url "..." -auto-fetch-metadata "Black Kids - Partie Traumatic"
+
+  iTurtle download -config albums.yaml
+
+  iTurtle download -example-config > albums.yaml
+
+  iTurtle version
+  iTurtle about
+`)
+}
+
+func runDownload(args []string, stdout, stderr io.Writer) int {
 	var cfg downloader.Config
 	var (
 		ytDLPPath       string
@@ -24,99 +89,98 @@ func main() {
 		showExampleConf bool
 	)
 
-	flag.StringVar(&cfg.URL, "url", "", "YouTube video or playlist URL (required unless -config is used)")
-	flag.StringVar(&cfg.OutputDir, "out", ".", "Directory where songs will be stored")
-	flag.StringVar(&cfg.Cover, "cover", "", "Path or URL to album / track cover image")
-	flag.StringVar(&cfg.AudioFormat, "format", "mp3", "Audio format to save (mp3 recommended)")
-	flag.StringVar(&ytDLPPath, "yt-dlp-path", "", "Path to yt-dlp binary (optional, searches PATH if not specified)")
-	flag.StringVar(&ffmpegPath, "ffmpeg-path", "", "Path to ffmpeg binary (optional, searches PATH if not specified)")
+	fs := flag.NewFlagSet("download", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&cfg.URL, "url", "", "YouTube video or playlist URL (required unless -config is used)")
+	fs.StringVar(&cfg.OutputDir, "out", ".", "Directory where songs will be stored")
+	fs.StringVar(&cfg.Cover, "cover", "", "Path or URL to album / track cover image")
+	fs.StringVar(&cfg.AudioFormat, "format", "mp3", "Audio format to save (mp3 recommended)")
+	fs.StringVar(&ytDLPPath, "yt-dlp-path", "", "Path to yt-dlp binary (optional, searches PATH if not specified)")
+	fs.StringVar(&ffmpegPath, "ffmpeg-path", "", "Path to ffmpeg binary (optional, searches PATH if not specified)")
 
-	flag.StringVar(&cfg.Metadata.Title, "title", "", "Song title metadata override")
-	flag.StringVar(&cfg.Metadata.Artist, "artist", "", "Artist metadata")
-	flag.StringVar(&cfg.Metadata.Album, "album", "", "Album metadata")
-	flag.StringVar(&cfg.Metadata.AlbumArtist, "album-artist", "", "Album artist metadata")
-	flag.StringVar(&cfg.Metadata.Composer, "composer", "", "Composer metadata")
-	flag.StringVar(&cfg.Metadata.Year, "year", "", "Release year metadata")
-	flag.StringVar(&cfg.Metadata.Genre, "genre", "", "Genre metadata")
-	flag.StringVar(&cfg.Metadata.Track, "track", "", "Track number metadata")
-	flag.StringVar(&cfg.Metadata.Comment, "comment", "", "Comment metadata")
+	fs.StringVar(&cfg.Metadata.Title, "title", "", "Song title metadata override")
+	fs.StringVar(&cfg.Metadata.Artist, "artist", "", "Artist metadata")
+	fs.StringVar(&cfg.Metadata.Album, "album", "", "Album metadata")
+	fs.StringVar(&cfg.Metadata.AlbumArtist, "album-artist", "", "Album artist metadata")
+	fs.StringVar(&cfg.Metadata.Composer, "composer", "", "Composer metadata")
+	fs.StringVar(&cfg.Metadata.Year, "year", "", "Release year metadata")
+	fs.StringVar(&cfg.Metadata.Genre, "genre", "", "Genre metadata")
+	fs.StringVar(&cfg.Metadata.Track, "track", "", "Track number metadata")
+	fs.StringVar(&cfg.Metadata.Comment, "comment", "", "Comment metadata")
 
-	flag.StringVar(&configFile, "config", "", "Path to YAML batch configuration file")
-	flag.StringVar(&musicBrainzID, "musicbrainz-id", "", "MusicBrainz release ID to fetch metadata")
-	flag.StringVar(&autoFetchQuery, "auto-fetch-metadata", "", "Auto-search MusicBrainz (format: \"Artist - Album\")")
-	flag.BoolVar(&showExampleConf, "example-config", false, "Print example configuration file and exit")
+	fs.StringVar(&configFile, "config", "", "Path to YAML batch configuration file")
+	fs.StringVar(&musicBrainzID, "musicbrainz-id", "", "MusicBrainz release ID to fetch metadata")
+	fs.StringVar(&autoFetchQuery, "auto-fetch-metadata", "", "Auto-search MusicBrainz (format: \"Artist - Album\")")
+	fs.BoolVar(&showExampleConf, "example-config", false, "Print example configuration file and exit")
 
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "iTurtle-Smart-Fetcher - download and tag music from YouTube\n\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(flag.CommandLine.Output(), `
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "iTurtle download - download and tag music from YouTube\n\n")
+		fmt.Fprintf(stderr, "Usage:\n  iTurtle download [parameters]\n\nParameters:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(stderr, `
 Examples:
-  # Single album with manual metadata
-  iturtle-smart-fetcher -url https://youtube.com/watch?v=VIDEO_ID -out ./music \
+  iTurtle download -url https://youtube.com/watch?v=VIDEO_ID -out ./music \
     -artist "Black Kids" -album "Partie Traumatic" -year 2008 -genre "Indie Pop"
 
-  # Fetch metadata from MusicBrainz by ID
-  iturtle-smart-fetcher -url "..." -musicbrainz-id "abc-123-def"
+  iTurtle download -url "..." -musicbrainz-id "abc-123-def"
 
-  # Auto-search MusicBrainz
-  iturtle-smart-fetcher -url "..." -auto-fetch-metadata "Black Kids - Partie Traumatic"
+  iTurtle download -url "..." -auto-fetch-metadata "Black Kids - Partie Traumatic"
 
-  # Batch mode with configuration file
-  iturtle-smart-fetcher -config albums.yaml
+  iTurtle download -config albums.yaml
 
-  # Generate example configuration file
-  iturtle-smart-fetcher -example-config > albums.yaml
+  iTurtle download -example-config > albums.yaml
 `)
 	}
-	flag.Parse()
 
-	// Handle example config output
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
 	if showExampleConf {
-		fmt.Print(config.Example())
-		os.Exit(0)
+		fmt.Fprint(stdout, config.Example())
+		return 0
+	}
+
+	if configFile == "" && strings.TrimSpace(cfg.URL) == "" {
+		fs.Usage()
+		return 1
 	}
 
 	ctx := context.Background()
 
-	// Resolve tool paths first
 	manager := tools.New()
 	paths, err := manager.Ensure(tools.Options{
 		YtDLPPath:  ytDLPPath,
 		FFmpegPath: ffmpegPath,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Tool setup failed: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "❌ Tool setup failed: %v\n", err)
+		return 1
 	}
 
-	// Batch mode with config file
 	if configFile != "" {
 		if err := runBatchMode(ctx, configFile, paths, cfg.AudioFormat); err != nil {
-			fmt.Fprintf(os.Stderr, "\n❌ Batch download failed: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "\n❌ Batch download failed: %v\n", err)
+			return 1
 		}
-		return
-	}
-
-	// Single download mode
-	if strings.TrimSpace(cfg.URL) == "" {
-		flag.Usage()
-		os.Exit(1)
+		return 0
 	}
 
 	cfg.YtDLPPath = paths.YtDLP
 	cfg.FFmpegPath = paths.FFmpeg
 
-	// Fetch metadata from MusicBrainz if requested
 	if musicBrainzID != "" || autoFetchQuery != "" {
 		pm, err := fetchMusicBrainzMetadata(ctx, musicBrainzID, autoFetchQuery)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  MusicBrainz lookup failed: %v\n", err)
-			fmt.Fprintf(os.Stderr, "    Continuing without MusicBrainz metadata...\n\n")
+			fmt.Fprintf(stderr, "⚠️  MusicBrainz lookup failed: %v\n", err)
+			fmt.Fprintf(stderr, "    Continuing without MusicBrainz metadata...\n\n")
 		} else {
 			cfg.PlaylistMetadata = pm
-			fmt.Fprintf(os.Stdout, "🎵 Found: %s - %s (%s)\n", pm.AlbumInfo.Artist, pm.AlbumInfo.Title, pm.AlbumInfo.Year)
-			fmt.Fprintf(os.Stdout, "   %d tracks\n\n", len(pm.Tracks))
+			fmt.Fprintf(stdout, "🎵 Found: %s - %s (%s)\n", pm.AlbumInfo.Artist, pm.AlbumInfo.Title, pm.AlbumInfo.Year)
+			fmt.Fprintf(stdout, "   %d tracks\n\n", len(pm.Tracks))
 		}
 	}
 
@@ -124,9 +188,11 @@ Examples:
 
 	_, err = dl.Download(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n❌ Download failed: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "\n❌ Download failed: %v\n", err)
+		return 1
 	}
+
+	return 0
 }
 
 // runBatchMode processes albums from a configuration file.
@@ -159,7 +225,6 @@ func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, def
 			cfg.AudioFormat = defaultFormat
 		}
 
-		// Fetch MusicBrainz metadata if needed
 		if albumCfg.NeedsMusicBrainzLookup() {
 			pm, err := fetchMusicBrainzMetadata(ctx, albumCfg.MusicBrainzID, albumCfg.AutoFetch)
 			if err != nil {
@@ -185,7 +250,6 @@ func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, def
 		fmt.Fprintf(os.Stdout, "\n")
 	}
 
-	// Summary
 	fmt.Fprintf(os.Stdout, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(os.Stdout, "Batch Complete: %d/%d albums successful\n", len(batchCfg.Albums)-len(failed), len(batchCfg.Albums))
 	if len(failed) > 0 {
@@ -207,13 +271,11 @@ func fetchMusicBrainzMetadata(ctx context.Context, mbID, autoQuery string) (*dow
 	var err error
 
 	if mbID != "" {
-		// Fetch by MusicBrainz ID
 		release, err = client.GetReleaseByID(ctx, mbID)
 		if err != nil {
 			return nil, fmt.Errorf("fetch release by ID: %w", err)
 		}
 	} else if autoQuery != "" {
-		// Auto-search
 		results, err := client.AutoSearch(ctx, autoQuery)
 		if err != nil {
 			return nil, fmt.Errorf("search releases: %w", err)
@@ -221,7 +283,6 @@ func fetchMusicBrainzMetadata(ctx context.Context, mbID, autoQuery string) (*dow
 		if len(results.Releases) == 0 {
 			return nil, fmt.Errorf("no releases found for query: %s", autoQuery)
 		}
-		// Get full release details for the first result
 		release, err = client.GetReleaseByID(ctx, results.Releases[0].ID)
 		if err != nil {
 			return nil, fmt.Errorf("fetch release details: %w", err)
@@ -230,11 +291,9 @@ func fetchMusicBrainzMetadata(ctx context.Context, mbID, autoQuery string) (*dow
 		return nil, fmt.Errorf("either musicbrainz-id or auto-fetch-metadata is required")
 	}
 
-	// Try to get cover art
 	var coverURL string
 	coverURL, err = client.GetFrontCoverURL(ctx, release.ID)
 	if err != nil {
-		// Cover art is optional, continue without it
 		coverURL = ""
 	}
 

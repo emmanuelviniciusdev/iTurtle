@@ -1,7 +1,7 @@
-# iTurtle-Smart-Fetcher Makefile
+# iTurtle Makefile
 
 # Variables
-BINARY_NAME=iturtle-smart-fetcher
+BINARY_NAME=iTurtle
 BINARY_UNIX=$(BINARY_NAME)_unix
 BINARY_WINDOWS=$(BINARY_NAME).exe
 BINARY_MAC=$(BINARY_NAME)_darwin
@@ -9,7 +9,7 @@ MAIN_PATH=./cmd/iturtle-smart-fetcher
 BUILD_DIR=./bin
 DIST_DIR=./dist
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 # Go parameters
 GOCMD=go
@@ -79,7 +79,8 @@ release: clean deps test build-all ## Create release archives for all platforms
 
 install: build ## Install binary to $GOPATH/bin or $GOBIN
 	@echo "Installing $(BINARY_NAME)..."
-	$(GOCMD) install $(LDFLAGS) $(MAIN_PATH)
+	@mkdir -p "$(shell go env GOPATH)/bin"
+	@cp "$(BUILD_DIR)/$(BINARY_NAME)" "$(shell go env GOPATH)/bin/$(BINARY_NAME)"
 	@echo "Installed to $(shell go env GOPATH)/bin/$(BINARY_NAME)"
 
 uninstall: ## Remove installed binary
@@ -135,13 +136,13 @@ tidy: ## Tidy and verify dependencies
 	$(GOMOD) tidy
 	$(GOMOD) verify
 
-run: build ## Build and run the application (requires -url flag)
+run: build ## Build and run the application (requires command, e.g. ARGS='download -url ...')
 	@echo "Running $(BINARY_NAME)..."
 	@$(BUILD_DIR)/$(BINARY_NAME) $(ARGS)
 
 run-example: build ## Run with example parameters
 	@echo "Running example download..."
-	@$(BUILD_DIR)/$(BINARY_NAME) \
+	@$(BUILD_DIR)/$(BINARY_NAME) download \
 		-url "https://youtube.com/watch?v=EXAMPLE_VIDEO_ID" \
 		-out ./downloads \
 		-artist "Black Kids" \

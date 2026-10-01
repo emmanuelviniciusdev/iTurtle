@@ -1,0 +1,16 @@
+iTurtle
+=======
+
+After unpacking, run the binary as `iTurtle`:
+
+  iTurtle download -url "https://youtube.com/watch?v=VIDEO_ID" -out ./music
+  iTurtle help
+  iTurtle version
+
+Required tools:
+
+  - ffmpeg
+  - yt-dlp
+
+The install scripts (`scripts/install.sh` on macOS/Linux, `scripts/install.ps1`
+on Windows) download this archive and install those tools when they are missing.
