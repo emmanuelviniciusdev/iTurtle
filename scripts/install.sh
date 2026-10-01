@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Install the pre-built iTurtle binary from GitHub Releases, plus ffmpeg and yt-dlp.
+# Runtime tools are installed as standalone binaries so macOS does not compile
+# MacPorts' full ffmpeg tree (cairo, Python, openssl3, ...).
 set -euo pipefail
 
 REPO="${ITURTLE_REPO:-emmanuelviniciusdev/iTurtle}"
@@ -25,6 +27,16 @@ download() {
     curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
   else
     curl -fsSL "$@"
+  fi
+}
+
+# Visible progress for large runtime binaries (ffmpeg/yt-dlp).
+download_bin() {
+  local dest="$1" url="$2"
+  if [[ -n "${GITHUB_TOKEN:-}" && "${url}" == *github.com* ]]; then
+    curl -fL --retry 3 --retry-delay 1 --progress-bar -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "${dest}" "${url}"
+  else
+    curl -fL --retry 3 --retry-delay 1 --progress-bar -o "${dest}" "${url}"
   fi
 }
 
@@ -96,26 +108,131 @@ normalize_tag() {
   printf '%s\n' "${tag}"
 }
 
-install_runtime_deps() {
-  local missing=()
-  command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
-  command -v yt-dlp >/dev/null 2>&1 || missing+=(yt-dlp)
-  if [[ ${#missing[@]} -eq 0 ]]; then
-    log "ffmpeg and yt-dlp already on PATH"
+extract_zip() {
+  local archive="$1" dest="$2"
+  mkdir -p "${dest}"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q -o "${archive}" -d "${dest}"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "${archive}" "${dest}"
+  else
+    tar -xf "${archive}" -C "${dest}"
+  fi
+}
+
+clear_quarantine() {
+  local path="$1"
+  [[ "$(detect_os)" == "darwin" ]] || return 0
+  xattr -dr com.apple.quarantine "${path}" 2>/dev/null || \
+    run_root xattr -dr com.apple.quarantine "${path}" 2>/dev/null || true
+}
+
+install_named_bin() {
+  local src="$1" name="$2"
+  mkdir -p "${PREFIX}" 2>/dev/null || run_root mkdir -p "${PREFIX}"
+  install_file "${src}" "${PREFIX}/${name}"
+  clear_quarantine "${PREFIX}/${name}"
+}
+
+find_extracted_bin() {
+  local root="$1" name="$2" f
+  if [[ -f "${root}/${name}" ]]; then
+    printf '%s\n' "${root}/${name}"
     return 0
   fi
+  while IFS= read -r f; do
+    if [[ -n "${f}" ]]; then
+      printf '%s\n' "${f}"
+      return 0
+    fi
+  done <<EOF
+$(find "${root}" -type f ! -path '*/__MACOSX/*' -name "${name}" 2>/dev/null)
+EOF
+  return 1
+}
 
-  log "installing missing runtime tools: ${missing[*]}"
+ytdlp_download_url() {
+  case "$(detect_os)_$(detect_arch)" in
+    darwin_*) printf '%s\n' "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" ;;
+    linux_amd64) printf '%s\n' "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" ;;
+    linux_arm64) printf '%s\n' "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64" ;;
+    *) return 1 ;;
+  esac
+}
 
+ffmpeg_zip_urls() {
+  local os arch plat
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+  case "${os}" in
+    darwin) plat="macos" ;;
+    linux) plat="linux" ;;
+    *) return 1 ;;
+  esac
+  case "${arch}" in
+    amd64|arm64) ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "https://ffmpeg.martin-riedl.de/redirect/latest/${plat}/${arch}/release/ffmpeg.zip"
+  printf '%s\n' "https://ffmpeg.martin-riedl.de/redirect/latest/${plat}/${arch}/release/ffprobe.zip"
+}
+
+install_zipped_bin() {
+  local url="$1" name="$2" tmpdir="$3"
+  local zipfile extract found
+  zipfile="${tmpdir}/${name}.zip"
+  extract="${tmpdir}/${name}.extract"
+  rm -rf "${extract}"
+  mkdir -p "${extract}"
+  download_bin "${zipfile}" "${url}" || return 1
+  extract_zip "${zipfile}" "${extract}" || return 1
+  found="$(find_extracted_bin "${extract}" "${name}")" || return 1
+  chmod +x "${found}"
+  install_named_bin "${found}" "${name}"
+}
+
+install_ytdlp_standalone() {
+  local tmpdir="$1" url src
+  url="$(ytdlp_download_url)" || return 1
+  src="${tmpdir}/yt-dlp"
+  log "downloading standalone yt-dlp"
+  download_bin "${src}" "${url}" || return 1
+  chmod +x "${src}"
+  install_named_bin "${src}" "yt-dlp"
+}
+
+install_ffmpeg_standalone() {
+  local tmpdir="$1"
+  local ffmpeg_url ffprobe_url urls
+  urls="$(ffmpeg_zip_urls)" || return 1
+  ffmpeg_url="$(printf '%s\n' "${urls}" | awk 'NR==1 {print; exit}')"
+  ffprobe_url="$(printf '%s\n' "${urls}" | awk 'NR==2 {print; exit}')"
+
+  log "downloading standalone ffmpeg"
+  if ! install_zipped_bin "${ffmpeg_url}" "ffmpeg" "${tmpdir}"; then
+    if [[ "$(detect_os)" == "darwin" && "$(detect_arch)" == "amd64" ]]; then
+      log "retrying ffmpeg from evermeet.cx"
+      install_zipped_bin "https://evermeet.cx/ffmpeg/getrelease/zip" "ffmpeg" "${tmpdir}" || return 1
+      install_zipped_bin "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" "ffprobe" "${tmpdir}" || true
+      return 0
+    fi
+    return 1
+  fi
+  log "downloading standalone ffprobe"
+  install_zipped_bin "${ffprobe_url}" "ffprobe" "${tmpdir}" || true
+}
+
+install_from_package_manager() {
+  local missing=("$@")
   case "$(detect_os)" in
     darwin)
       if command -v brew >/dev/null 2>&1; then
         brew install "${missing[@]}"
-      elif command -v port >/dev/null 2>&1; then
-        run_root port install "${missing[@]}"
-      else
-        err "ffmpeg/yt-dlp are missing and neither Homebrew nor MacPorts was found. Install one of them, or install ffmpeg and yt-dlp manually."
+        return 0
       fi
+      # MacPorts' ffmpeg port always pulls librsvg → Python → openssl3 and
+      # often compiles them from source. That is far more than iTurtle needs.
+      return 1
       ;;
     linux)
       if command -v apt-get >/dev/null 2>&1; then
@@ -128,7 +245,60 @@ install_runtime_deps() {
       elif command -v pacman >/dev/null 2>&1; then
         run_root pacman -Sy --noconfirm "${missing[@]}"
       else
-        err "ffmpeg/yt-dlp are missing and no supported package manager was found (apt, dnf, yum, pacman)."
+        return 1
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_standalone_tools() {
+  local need dep_tmp
+  dep_tmp="$(mktemp -d)"
+  for need in "$@"; do
+    case "${need}" in
+      yt-dlp) install_ytdlp_standalone "${dep_tmp}" || true ;;
+      ffmpeg) install_ffmpeg_standalone "${dep_tmp}" || true ;;
+    esac
+  done
+  rm -rf "${dep_tmp}"
+}
+
+refresh_missing() {
+  missing=()
+  command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
+  command -v yt-dlp >/dev/null 2>&1 || missing+=(yt-dlp)
+}
+
+install_runtime_deps() {
+  local missing=()
+  export PATH="${PREFIX}:${PATH}"
+  refresh_missing
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    log "ffmpeg and yt-dlp already on PATH"
+    return 0
+  fi
+
+  log "installing missing runtime tools: ${missing[*]}"
+
+  case "$(detect_os)" in
+    darwin)
+      # Prefer static binaries. MacPorts ffmpeg always depends on librsvg,
+      # which pulls Python and openssl3 and often compiles them from source.
+      install_standalone_tools "${missing[@]}"
+      refresh_missing
+      if [[ ${#missing[@]} -ne 0 ]]; then
+        log "standalone download incomplete; trying Homebrew for: ${missing[*]}"
+        install_from_package_manager "${missing[@]}" || \
+          err "could not install ${missing[*]} as standalone binaries, and Homebrew was not found. Install ffmpeg and yt-dlp manually (brew install ffmpeg yt-dlp)."
+      fi
+      ;;
+    linux)
+      if ! install_from_package_manager "${missing[@]}"; then
+        log "no supported package manager; downloading standalone binaries"
+        install_standalone_tools "${missing[@]}"
       fi
       ;;
   esac
