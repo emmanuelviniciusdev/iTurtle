@@ -4,12 +4,12 @@
 
 # iTurtle
 
-Welcome! This is a friendly music helper that downloads your favorite tunes from YouTube, neatens up their titles and artist info, adds album cover art, and organizes everything right into your music library.
+Welcome! iTurtle is a CLI utility that downloads audio streams from YouTube, converts them into high-quality MP3s, embeds complete ID3 tags and cover art, and organizes tracks seamlessly into the specified destination folder.
 
 ## Features
 
 - **Single Songs & Full Playlists**: Grab an individual track or an entire album playlist in one go.
-- **Great Sound Quality**: Saves your songs in crisp, high-quality audio files (like MP3) ready for any music player.
+- **Great Sound Quality**: Saves your songs in crisp, high-quality audio files (like MP3) ready for your iPod.
 - **Complete Song Details**: Automatically adds song titles, artist names, album titles, track numbers, release years, and genres so your library looks great.
 - **Automatic Album Art**: Embeds cover art directly into your music files from online databases, web links, or image files on your computer.
 - **Smart Music Search**: Search by artist and album name to pull accurate tracklists and release details automatically.
