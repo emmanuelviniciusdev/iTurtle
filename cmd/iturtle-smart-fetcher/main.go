@@ -59,8 +59,8 @@ Usage:
 
 Commands:
   download    Download and tag music from YouTube
-  generate    Generate an example file
-  about       What iTurtle does and who created it
+  generate    Generate sample files (currently only albums.yml)
+  about       About iTurtle
   version     Print the current version
   help        Show this help
 
@@ -82,7 +82,7 @@ Examples:
 }
 
 func printGenerateUsage(w io.Writer) {
-	fmt.Fprintf(w, `iTurtle generate - generate an example file
+	fmt.Fprintf(w, `iTurtle generate - generate albums.yml
 
 Usage:
   iTurtle generate <name>
@@ -175,6 +175,8 @@ func runDownload(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&ytDLPPath, "yt-dlp-path", "", "Path to yt-dlp binary (optional, searches PATH if not specified)")
 	fs.StringVar(&ffmpegPath, "ffmpeg-path", "", "Path to ffmpeg binary (optional, searches PATH if not specified)")
 	fs.StringVar(&jsRuntimePath, "js-runtime-path", "", "Path to Deno or Node (optional, searches PATH if not specified)")
+	fs.StringVar(&cfg.CookiesFromBrowser, "cookies-from-browser", "", "Read YouTube cookies from a browser (safari, chrome, firefox, brave, edge)")
+	fs.StringVar(&cfg.Cookies, "cookies", "", "Path to a Netscape-format cookies file for YouTube")
 
 	fs.StringVar(&cfg.Metadata.Title, "title", "", "Song title metadata override")
 	fs.StringVar(&cfg.Metadata.Artist, "artist", "", "Artist metadata")
@@ -203,6 +205,8 @@ Examples:
 
   iTurtle download -url "..." -auto-fetch-metadata "Black Kids - Partie Traumatic"
 
+  iTurtle download -url "..." -cookies-from-browser safari
+
   iTurtle download -config albums.yml
 `)
 	}
@@ -219,6 +223,17 @@ Examples:
 		return 1
 	}
 
+	if strings.TrimSpace(cfg.Cookies) != "" && strings.TrimSpace(cfg.CookiesFromBrowser) != "" {
+		fmt.Fprintf(stderr, "❌ use either -cookies-from-browser or -cookies, not both\n")
+		return 2
+	}
+	if cookies := strings.TrimSpace(cfg.Cookies); cookies != "" {
+		if _, err := os.Stat(cookies); err != nil {
+			fmt.Fprintf(stderr, "❌ cookies file: %v\n", err)
+			return 1
+		}
+	}
+
 	ctx := context.Background()
 
 	manager := tools.New()
@@ -233,7 +248,7 @@ Examples:
 	}
 
 	if configFile != "" {
-		if err := runBatchMode(ctx, configFile, paths, cfg.AudioFormat); err != nil {
+		if err := runBatchMode(ctx, configFile, paths, cfg); err != nil {
 			fmt.Fprintf(stderr, "\n❌ Batch download failed: %v\n", err)
 			return 1
 		}
@@ -267,7 +282,7 @@ Examples:
 }
 
 // runBatchMode processes albums from a configuration file.
-func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, defaultFormat string) error {
+func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, defaults downloader.Config) error {
 	batchCfg, err := config.LoadFromFile(configFile)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -293,8 +308,10 @@ func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, def
 		cfg.YtDLPPath = paths.YtDLP
 		cfg.FFmpegPath = paths.FFmpeg
 		cfg.JSRuntime = paths.JSRuntime
+		cfg.Cookies = defaults.Cookies
+		cfg.CookiesFromBrowser = defaults.CookiesFromBrowser
 		if cfg.AudioFormat == "" {
-			cfg.AudioFormat = defaultFormat
+			cfg.AudioFormat = defaults.AudioFormat
 		}
 
 		if albumCfg.NeedsMusicBrainzLookup() {

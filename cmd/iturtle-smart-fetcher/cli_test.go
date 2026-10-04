@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,8 +49,8 @@ func TestRunHelp(t *testing.T) {
 	for _, want := range []string{
 		"iTurtle <command> [parameters]",
 		"download    Download and tag music from YouTube",
-		"generate    Generate an example file",
-		"about       What iTurtle does and who created it",
+		"generate    Generate sample files (currently only albums.yml)",
+		"about       About iTurtle",
 		"version     Print the current version",
 		"iTurtle download -url",
 		"iTurtle generate albums.yml",
@@ -62,6 +63,15 @@ func TestRunHelp(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+	for _, old := range []string{
+		"What iTurtle does and who created it",
+		"-example-config",
+		"albums.yaml",
+	} {
+		if strings.Contains(got, old) {
+			t.Errorf("help still contains old text %q\n%s", old, got)
+		}
 	}
 }
 
@@ -206,6 +216,43 @@ func TestRunDownloadHelp(t *testing.T) {
 	}
 	if !strings.Contains(got, "-url") {
 		t.Fatalf("download help missing -url: %s", got)
+	}
+	if !strings.Contains(got, "-cookies-from-browser") {
+		t.Fatalf("download help missing -cookies-from-browser: %s", got)
+	}
+	if !strings.Contains(got, "-cookies") {
+		t.Fatalf("download help missing -cookies: %s", got)
+	}
+}
+
+func TestRunDownloadRejectsBothCookieFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"download",
+		"-url", "https://example.com",
+		"-cookies", "cookies.txt",
+		"-cookies-from-browser", "safari",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not both") {
+		t.Fatalf("stderr missing mutual-exclusion message: %s", stderr.String())
+	}
+}
+
+func TestRunDownloadMissingCookiesFile(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"download",
+		"-url", "https://example.com",
+		"-cookies", filepath.Join(t.TempDir(), "missing-cookies.txt"),
+	}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cookies file") {
+		t.Fatalf("stderr missing cookies file error: %s", stderr.String())
 	}
 }
 

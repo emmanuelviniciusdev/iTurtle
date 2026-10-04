@@ -56,11 +56,13 @@ type Config struct {
 	OutputDir        string
 	Cover            string // Local file path or URL
 	AudioFormat      string
-	YtDLPPath        string
-	FFmpegPath       string
-	JSRuntime        string // yt-dlp --js-runtimes value, e.g. "deno:/usr/local/bin/deno"
-	Metadata         Metadata
-	PlaylistMetadata *PlaylistMetadata // Optional per-track metadata for playlists
+	YtDLPPath          string
+	FFmpegPath         string
+	JSRuntime          string // yt-dlp --js-runtimes value, e.g. "deno:/usr/local/bin/deno"
+	Cookies            string // Netscape cookies file for yt-dlp --cookies
+	CookiesFromBrowser string // Browser name for yt-dlp --cookies-from-browser
+	Metadata           Metadata
+	PlaylistMetadata   *PlaylistMetadata // Optional per-track metadata for playlists
 }
 
 // MergeTrackMetadata creates a Metadata struct by merging album-level and track-level data.

@@ -201,7 +201,29 @@ iTurtle download -config albums.yml
 
 
 
-### 7. Handy Quick Commands
+### 7. If YouTube Asks You to Sign In
+
+Sometimes YouTube thinks a download is a robot and blocks it. If iTurtle says it needs you to sign in, pass cookies from the browser where you are already logged into YouTube:
+
+```bash
+iTurtle download \
+  -url "https://www.youtube.com/playlist?list=PL_BLACK_KIDS_PARTIE_TRAUMATIC" \
+  -auto-fetch-metadata "Black Kids - Partie Traumatic" \
+  -out ./music/Black_Kids/Partie_Traumatic \
+  -cookies-from-browser safari
+```
+
+Safari, Chrome, Firefox, Brave, and Edge all work. Close Chrome or Edge first so their cookie file can be read. You can also pass a cookies file with `-cookies /path/to/cookies.txt`.
+
+These same options work with batch downloads:
+
+```bash
+iTurtle download -config albums.yml -cookies-from-browser safari
+```
+
+
+
+### 8. Handy Quick Commands
 
 ```bash
 # Generate a starter albums.yml

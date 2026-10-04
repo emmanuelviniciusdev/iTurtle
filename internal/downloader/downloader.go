@@ -86,7 +86,7 @@ func (d *Downloader) Download(ctx context.Context, cfg Config) ([]string, error)
 	_ = plannedList.Close()
 	defer os.Remove(plannedPath)
 
-	ytArgs := withPrintToFile(buildYtDlpArgs(cfg.URL, cfg.OutputDir, format, cfg.JSRuntime), movedPath, plannedPath)
+	ytArgs := withPrintToFile(buildYtDlpArgs(cfg, format), movedPath, plannedPath)
 	ytOutput, ytErr := d.runYtDlp(ctx, ytCmd, ytArgs)
 
 	after, err := snapshotFiles(cfg.OutputDir, format)
@@ -97,6 +97,10 @@ func (d *Downloader) Download(ctx context.Context, cfg Config) ([]string, error)
 	files := collectDownloadedAudio(cfg.OutputDir, format, ytOutput, movedPath, plannedPath, diffFiles(before, after))
 	if len(files) == 0 {
 		d.progress.PrintError("Download failed")
+		if hint := youtubeAuthHint(ytOutput, cfg); hint != "" {
+			d.progress.PrintError(hint)
+			return nil, errors.New(hint)
+		}
 		if ytErr != nil {
 			return nil, ytErr
 		}
@@ -186,9 +190,9 @@ func (d *Downloader) runYtDlp(ctx context.Context, ytCmd string, ytArgs []string
 	return d.runner.Run(ctx, ytCmd, ytArgs...)
 }
 
-func buildYtDlpArgs(url, outputDir, format, jsRuntime string) []string {
+func buildYtDlpArgs(cfg Config, format string) []string {
 	// Use playlist index in filename to ensure proper ordering for per-track metadata
-	template := filepath.Join(outputDir, "%(playlist_index|0)s - %(title)s.%(ext)s")
+	template := filepath.Join(cfg.OutputDir, "%(playlist_index|0)s - %(title)s.%(ext)s")
 	args := []string{
 		"--extract-audio",
 		"--audio-format", format,
@@ -199,10 +203,33 @@ func buildYtDlpArgs(url, outputDir, format, jsRuntime string) []string {
 		"--no-continue",
 		"--newline",
 	}
-	if spec := strings.TrimSpace(jsRuntime); spec != "" {
+	if spec := strings.TrimSpace(cfg.JSRuntime); spec != "" {
 		args = append(args, "--js-runtimes", spec)
 	}
-	return append(args, "-o", template, url)
+	if cookies := strings.TrimSpace(cfg.Cookies); cookies != "" {
+		args = append(args, "--cookies", cookies)
+	}
+	if browser := strings.TrimSpace(cfg.CookiesFromBrowser); browser != "" {
+		args = append(args, "--cookies-from-browser", browser)
+	}
+	return append(args, "-o", template, cfg.URL)
+}
+
+func isYouTubeBotCheck(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "sign in to confirm") ||
+		strings.Contains(lower, "confirm you're not a bot") ||
+		strings.Contains(lower, "confirm you’re not a bot")
+}
+
+func youtubeAuthHint(output string, cfg Config) string {
+	if !isYouTubeBotCheck(output) {
+		return ""
+	}
+	if strings.TrimSpace(cfg.Cookies) == "" && strings.TrimSpace(cfg.CookiesFromBrowser) == "" {
+		return "YouTube blocked the download (bot check). Sign in to YouTube in your browser, then retry with -cookies-from-browser safari (or chrome, firefox). You can also pass a Netscape cookies file with -cookies"
+	}
+	return "YouTube blocked the download even with cookies. Close Chromium-based browsers first, confirm you are signed into YouTube, or try -cookies-from-browser firefox"
 }
 
 func withPrintToFile(args []string, movedPath, plannedPath string) []string {

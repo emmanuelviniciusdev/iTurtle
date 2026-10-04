@@ -142,6 +142,7 @@ type fakeRunner struct {
 	audioFormat string
 	calls       []cmdCall
 	ytErr       error
+	ytOutput    string
 	skipWrite   bool
 	existing    []string
 }
@@ -176,6 +177,9 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) (stri
 		written = append(written, f.existing...)
 		writePrintLists(args, written)
 		if f.ytErr != nil {
+			if f.ytOutput != "" {
+				return f.ytOutput, f.ytErr
+			}
 			return "ERROR: [youtube] abc123: Video unavailable", f.ytErr
 		}
 		return "ok", nil
@@ -411,8 +415,16 @@ func (f *fakeRunnerWithIndex) Run(ctx context.Context, name string, args ...stri
 	}
 }
 
+func testYtDlpCfg(jsRuntime string) Config {
+	return Config{
+		URL:       "https://example.com/video",
+		OutputDir: "/output",
+		JSRuntime: jsRuntime,
+	}
+}
+
 func TestBuildYtDlpArgsHighestQuality(t *testing.T) {
-	args := buildYtDlpArgs("https://example.com/video", "/output", "mp3", "")
+	args := buildYtDlpArgs(testYtDlpCfg(""), "mp3")
 	argsStr := strings.Join(args, " ")
 
 	// Check for highest quality flag
@@ -427,15 +439,33 @@ func TestBuildYtDlpArgsHighestQuality(t *testing.T) {
 }
 
 func TestBuildYtDlpArgsIncludesJSRuntime(t *testing.T) {
-	args := buildYtDlpArgs("https://example.com/video", "/output", "mp3", "deno:/usr/local/bin/deno")
+	args := buildYtDlpArgs(testYtDlpCfg("deno:/usr/local/bin/deno"), "mp3")
 	argsStr := strings.Join(args, " ")
 	if !strings.Contains(argsStr, "--js-runtimes deno:/usr/local/bin/deno") {
 		t.Errorf("expected --js-runtimes in yt-dlp args, got: %s", argsStr)
 	}
 }
 
+func TestBuildYtDlpArgsIncludesCookies(t *testing.T) {
+	cfg := testYtDlpCfg("")
+	cfg.CookiesFromBrowser = "safari"
+	args := buildYtDlpArgs(cfg, "mp3")
+	argsStr := strings.Join(args, " ")
+	if !strings.Contains(argsStr, "--cookies-from-browser safari") {
+		t.Errorf("expected --cookies-from-browser safari, args: %s", argsStr)
+	}
+
+	cfg = testYtDlpCfg("")
+	cfg.Cookies = "/tmp/cookies.txt"
+	args = buildYtDlpArgs(cfg, "mp3")
+	argsStr = strings.Join(args, " ")
+	if !strings.Contains(argsStr, "--cookies /tmp/cookies.txt") {
+		t.Errorf("expected --cookies /tmp/cookies.txt, args: %s", argsStr)
+	}
+}
+
 func TestBuildYtDlpArgsOmitsDeprecatedPreferFFmpeg(t *testing.T) {
-	args := buildYtDlpArgs("https://example.com/video", "/output", "mp3", "")
+	args := buildYtDlpArgs(testYtDlpCfg(""), "mp3")
 	argsStr := strings.Join(args, " ")
 	if strings.Contains(argsStr, "--prefer-ffmpeg") {
 		t.Errorf("did not expect deprecated --prefer-ffmpeg, args: %s", argsStr)
@@ -546,6 +576,74 @@ func TestDownloadFailsWhenYtDlpFailsAndNoFilesExist(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when yt-dlp fails and no files were downloaded")
+	}
+}
+
+func TestDownloadYouTubeBotCheckHint(t *testing.T) {
+	tempDir := t.TempDir()
+	runner := &fakeRunner{
+		audioFormat: "mp3",
+		skipWrite:   true,
+		ytErr:       errors.New("exit status 1"),
+		ytOutput:    "WARNING: [youtube] Sign in to confirm you’re not a bot. Use --cookies-from-browser\nERROR: [youtube] abc: No video formats found!",
+	}
+	dl := New(runner, nil)
+
+	_, err := dl.Download(context.Background(), Config{
+		URL:         "https://example.com/playlist",
+		OutputDir:   tempDir,
+		AudioFormat: "mp3",
+	})
+	if err == nil {
+		t.Fatal("expected bot-check error")
+	}
+	if !strings.Contains(err.Error(), "-cookies-from-browser") {
+		t.Fatalf("expected cookies hint, got: %v", err)
+	}
+}
+
+func TestDownloadPassesCookiesToYtDlp(t *testing.T) {
+	tempDir := t.TempDir()
+	runner := &fakeRunner{audioFormat: "mp3"}
+	dl := New(runner, nil)
+
+	_, err := dl.Download(context.Background(), Config{
+		URL:                "https://example.com/playlist",
+		OutputDir:          tempDir,
+		AudioFormat:        "mp3",
+		CookiesFromBrowser: "safari",
+	})
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	for _, call := range runner.calls {
+		if call.name != "yt-dlp" {
+			continue
+		}
+		joined := strings.Join(call.args, " ")
+		if !strings.Contains(joined, "--cookies-from-browser safari") {
+			t.Fatalf("expected cookies-from-browser in yt-dlp args, got: %s", joined)
+		}
+		return
+	}
+	t.Fatal("yt-dlp was not called")
+}
+
+func TestYouTubeAuthHint(t *testing.T) {
+	output := "WARNING: [youtube] Sign in to confirm you’re not a bot."
+	got := youtubeAuthHint(output, Config{})
+	if !strings.Contains(got, "-cookies-from-browser") {
+		t.Fatalf("expected cookies hint without auth, got %q", got)
+	}
+
+	got = youtubeAuthHint(output, Config{CookiesFromBrowser: "safari"})
+	if !strings.Contains(got, "even with cookies") {
+		t.Fatalf("expected already-authenticated hint, got %q", got)
+	}
+
+	if youtubeAuthHint("ERROR: video unavailable", Config{}) != "" {
+		t.Fatal("did not expect a hint for unrelated errors")
 	}
 }
 
