@@ -83,6 +83,7 @@ func runDownload(args []string, stdout, stderr io.Writer) int {
 	var (
 		ytDLPPath       string
 		ffmpegPath      string
+		jsRuntimePath   string
 		configFile      string
 		musicBrainzID   string
 		autoFetchQuery  string
@@ -97,6 +98,7 @@ func runDownload(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&cfg.AudioFormat, "format", "mp3", "Audio format to save (mp3 recommended)")
 	fs.StringVar(&ytDLPPath, "yt-dlp-path", "", "Path to yt-dlp binary (optional, searches PATH if not specified)")
 	fs.StringVar(&ffmpegPath, "ffmpeg-path", "", "Path to ffmpeg binary (optional, searches PATH if not specified)")
+	fs.StringVar(&jsRuntimePath, "js-runtime-path", "", "Path to Deno or Node (optional, searches PATH if not specified)")
 
 	fs.StringVar(&cfg.Metadata.Title, "title", "", "Song title metadata override")
 	fs.StringVar(&cfg.Metadata.Artist, "artist", "", "Artist metadata")
@@ -153,8 +155,9 @@ Examples:
 
 	manager := tools.New()
 	paths, err := manager.Ensure(tools.Options{
-		YtDLPPath:  ytDLPPath,
-		FFmpegPath: ffmpegPath,
+		YtDLPPath:     ytDLPPath,
+		FFmpegPath:    ffmpegPath,
+		JSRuntimePath: jsRuntimePath,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "❌ Tool setup failed: %v\n", err)
@@ -171,6 +174,7 @@ Examples:
 
 	cfg.YtDLPPath = paths.YtDLP
 	cfg.FFmpegPath = paths.FFmpeg
+	cfg.JSRuntime = paths.JSRuntime
 
 	if musicBrainzID != "" || autoFetchQuery != "" {
 		pm, err := fetchMusicBrainzMetadata(ctx, musicBrainzID, autoFetchQuery)
@@ -179,8 +183,7 @@ Examples:
 			fmt.Fprintf(stderr, "    Continuing without MusicBrainz metadata...\n\n")
 		} else {
 			cfg.PlaylistMetadata = pm
-			fmt.Fprintf(stdout, "🎵 Found: %s - %s (%s)\n", pm.AlbumInfo.Artist, pm.AlbumInfo.Title, pm.AlbumInfo.Year)
-			fmt.Fprintf(stdout, "   %d tracks\n\n", len(pm.Tracks))
+			printMusicBrainzFound(stdout, pm)
 		}
 	}
 
@@ -221,6 +224,7 @@ func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, def
 		cfg := albumCfg.ToDownloaderConfig(".")
 		cfg.YtDLPPath = paths.YtDLP
 		cfg.FFmpegPath = paths.FFmpeg
+		cfg.JSRuntime = paths.JSRuntime
 		if cfg.AudioFormat == "" {
 			cfg.AudioFormat = defaultFormat
 		}
@@ -232,8 +236,7 @@ func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, def
 				fmt.Fprintf(os.Stderr, "    Continuing with manual metadata...\n\n")
 			} else {
 				cfg.PlaylistMetadata = pm
-				fmt.Fprintf(os.Stdout, "🎵 Found: %s - %s (%s)\n", pm.AlbumInfo.Artist, pm.AlbumInfo.Title, pm.AlbumInfo.Year)
-				fmt.Fprintf(os.Stdout, "   %d tracks\n\n", len(pm.Tracks))
+				printMusicBrainzFound(os.Stdout, pm)
 			}
 		}
 
@@ -261,6 +264,11 @@ func runBatchMode(ctx context.Context, configFile string, paths tools.Paths, def
 	}
 
 	return nil
+}
+
+func printMusicBrainzFound(w io.Writer, pm *downloader.PlaylistMetadata) {
+	fmt.Fprintf(w, "🎵 Found on MusicBrainz: %s - %s (%s)\n", pm.AlbumInfo.Artist, pm.AlbumInfo.Title, pm.AlbumInfo.Year)
+	fmt.Fprintf(w, "   %d tracks\n\n", len(pm.Tracks))
 }
 
 // fetchMusicBrainzMetadata fetches album and track metadata from MusicBrainz.

@@ -11,6 +11,7 @@ Required tools:
 
   - ffmpeg
   - yt-dlp
+  - Deno (or Node 22+) — yt-dlp needs a JavaScript runtime for YouTube
 
 The install scripts (`scripts/install.sh` on macOS/Linux, `scripts/install.ps1`
 on Windows) download this archive and install those tools when they are missing.

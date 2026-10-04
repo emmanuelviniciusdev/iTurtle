@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type ProgressPrinter struct {
 	turtlePos  int
 	lastUpdate time.Time
 	turtles    []string
+	mu         sync.Mutex
 }
 
 // NewProgressPrinter creates a new turtle progress printer
@@ -30,9 +32,10 @@ func NewProgressPrinter(w io.Writer) *ProgressPrinter {
 	}
 }
 
-// PrintStart prints the start of a download operation
+// PrintStart prints the start of a download operation.
+// It stays on the same line so the walking turtle can overwrite it.
 func (p *ProgressPrinter) PrintStart(operation string) {
-	fmt.Fprintf(p.writer, "\n🐢 %s...\n", operation)
+	fmt.Fprintf(p.writer, "\n🐢 %s...", operation)
 }
 
 // PrintProgress prints an animated progress indicator
@@ -42,11 +45,14 @@ func (p *ProgressPrinter) PrintProgress(message string) {
 		return
 	}
 	p.lastUpdate = time.Now()
+	p.printFrame(message)
+}
 
-	// Cycle through turtle positions
+func (p *ProgressPrinter) printFrame(message string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.turtlePos = (p.turtlePos + 1) % 4
 
-	// Create animation frames
 	var animation string
 	switch p.turtlePos {
 	case 0:
@@ -59,8 +65,67 @@ func (p *ProgressPrinter) PrintProgress(message string) {
 		animation = "   🐢 "
 	}
 
-	// Print with carriage return to overwrite
-	fmt.Fprintf(p.writer, "\r%s %s", animation, message)
+	message = truncateRunes(message, 60)
+	fmt.Fprintf(p.writer, "\r%s %s\033[K", animation, message)
+}
+
+// startLive animates the turtle until Stop is called. SetMessage updates the
+// text shown next to the turtle without interrupting the walk cycle.
+func (p *ProgressPrinter) startLive(message string) *liveAnim {
+	a := &liveAnim{
+		p:       p,
+		message: message,
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	a.print()
+	go a.loop()
+	return a
+}
+
+type liveAnim struct {
+	p       *ProgressPrinter
+	mu      sync.Mutex
+	message string
+	stop    chan struct{}
+	done    chan struct{}
+}
+
+func (a *liveAnim) loop() {
+	defer close(a.done)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stop:
+			return
+		case <-ticker.C:
+			a.print()
+		}
+	}
+}
+
+func (a *liveAnim) print() {
+	a.mu.Lock()
+	msg := a.message
+	a.mu.Unlock()
+	a.p.printFrame(msg)
+}
+
+func (a *liveAnim) SetMessage(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	a.mu.Lock()
+	a.message = message
+	a.mu.Unlock()
+}
+
+func (a *liveAnim) Stop() {
+	close(a.stop)
+	<-a.done
+	a.p.ClearLine()
 }
 
 // PrintComplete prints a completion message
@@ -100,5 +165,18 @@ func (p *ProgressPrinter) PrintSection(title string) {
 
 // ClearLine clears the current line
 func (p *ProgressPrinter) ClearLine() {
-	fmt.Fprintf(p.writer, "\r%s\r", strings.Repeat(" ", 80))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fmt.Fprintf(p.writer, "\r\033[K")
+}
+
+func truncateRunes(s string, max int) string {
+	if max < 4 {
+		max = 4
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-3]) + "..."
 }

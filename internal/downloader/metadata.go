@@ -58,6 +58,7 @@ type Config struct {
 	AudioFormat      string
 	YtDLPPath        string
 	FFmpegPath       string
+	JSRuntime        string // yt-dlp --js-runtimes value, e.g. "deno:/usr/local/bin/deno"
 	Metadata         Metadata
 	PlaylistMetadata *PlaylistMetadata // Optional per-track metadata for playlists
 }

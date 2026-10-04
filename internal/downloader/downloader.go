@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Downloader orchestrates fetching audio with yt-dlp and tagging it with ffmpeg.
@@ -67,27 +68,47 @@ func (d *Downloader) Download(ctx context.Context, cfg Config) ([]string, error)
 	}
 
 	d.progress.PrintSection("Downloading from YouTube")
-	d.progress.PrintStart(fmt.Sprintf("Fetching audio from %s", cfg.URL))
+	d.progress.PrintStart("Fetching audio")
 
-	ytArgs := buildYtDlpArgs(cfg.URL, cfg.OutputDir, format)
-	if _, err := d.runner.Run(ctx, ytCmd, ytArgs...); err != nil {
-		d.progress.PrintError("Download failed")
-		return nil, err
+	movedList, err := os.CreateTemp("", "iturtle-ytdlp-moved-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create yt-dlp file list: %w", err)
 	}
+	movedPath := movedList.Name()
+	_ = movedList.Close()
+	defer os.Remove(movedPath)
+
+	plannedList, err := os.CreateTemp("", "iturtle-ytdlp-planned-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create yt-dlp file list: %w", err)
+	}
+	plannedPath := plannedList.Name()
+	_ = plannedList.Close()
+	defer os.Remove(plannedPath)
+
+	ytArgs := withPrintToFile(buildYtDlpArgs(cfg.URL, cfg.OutputDir, format, cfg.JSRuntime), movedPath, plannedPath)
+	ytOutput, ytErr := d.runYtDlp(ctx, ytCmd, ytArgs)
 
 	after, err := snapshotFiles(cfg.OutputDir, format)
 	if err != nil {
 		return nil, err
 	}
 
-	newFiles := diffFiles(before, after)
-	if len(newFiles) == 0 {
+	files := collectDownloadedAudio(cfg.OutputDir, format, ytOutput, movedPath, plannedPath, diffFiles(before, after))
+	if len(files) == 0 {
+		d.progress.PrintError("Download failed")
+		if ytErr != nil {
+			return nil, ytErr
+		}
 		d.progress.PrintError("No new audio files found")
 		return nil, errors.New("no new audio files found after download")
 	}
+	if ytErr != nil {
+		d.progress.PrintWarning("Some playlist items could not be downloaded; tagging the files that succeeded")
+	}
 
-	d.progress.PrintComplete("Downloaded", len(newFiles))
-	for _, file := range newFiles {
+	d.progress.PrintComplete("Downloaded", len(files))
+	for _, file := range files {
 		d.progress.PrintFile(file)
 	}
 
@@ -123,8 +144,8 @@ func (d *Downloader) Download(ctx context.Context, cfg Config) ([]string, error)
 			ffmpegCmd = "ffmpeg"
 		}
 
-		for i, file := range newFiles {
-			d.progress.PrintProgress(fmt.Sprintf("Tagging %d/%d: %s", i+1, len(newFiles), filepath.Base(file)))
+		for i, file := range files {
+			d.progress.PrintProgress(fmt.Sprintf("Tagging %d/%d: %s", i+1, len(files), filepath.Base(file)))
 
 			// Determine metadata for this file
 			meta := cfg.Metadata
@@ -135,34 +156,239 @@ func (d *Downloader) Download(ctx context.Context, cfg Config) ([]string, error)
 			if err := d.applyMetadata(ctx, ffmpegCmd, filepath.Join(cfg.OutputDir, file), coverPath, meta); err != nil {
 				d.progress.ClearLine()
 				d.progress.PrintError(fmt.Sprintf("Failed to tag %s: %v", file, err))
-				return newFiles, err
+				return files, err
 			}
 		}
 		d.progress.ClearLine()
-		d.progress.PrintComplete("Metadata applied to all files", len(newFiles))
+		d.progress.PrintComplete("Metadata applied to all files", len(files))
 	}
 
 	d.progress.PrintSection("Complete")
-	fmt.Fprintf(os.Stdout, "🎵 Successfully processed %d file(s) 🎵\n\n", len(newFiles))
+	fmt.Fprintf(os.Stdout, "🎵 Successfully processed %d file(s) 🎵\n\n", len(files))
 
-	return newFiles, nil
+	return files, nil
 }
 
-func buildYtDlpArgs(url, outputDir, format string) []string {
+func (d *Downloader) runYtDlp(ctx context.Context, ytCmd string, ytArgs []string) (string, error) {
+	live := d.progress.startLive("Fetching audio")
+	defer live.Stop()
+
+	var state ytProgressState
+	onLine := func(line string) {
+		if msg := parseYtDlpProgress(line, &state); msg != "" {
+			live.SetMessage(msg)
+		}
+	}
+
+	if streamer, ok := d.runner.(outputStreamer); ok {
+		return streamer.RunStreaming(ctx, onLine, ytCmd, ytArgs...)
+	}
+	return d.runner.Run(ctx, ytCmd, ytArgs...)
+}
+
+func buildYtDlpArgs(url, outputDir, format, jsRuntime string) []string {
 	// Use playlist index in filename to ensure proper ordering for per-track metadata
 	template := filepath.Join(outputDir, "%(playlist_index|0)s - %(title)s.%(ext)s")
-	return []string{
+	args := []string{
 		"--extract-audio",
 		"--audio-format", format,
 		"--audio-quality", "0", // Highest quality (0 = best, 10 = worst for VBR)
-		"--prefer-ffmpeg",
 		"--yes-playlist",
 		"--ignore-errors",
+		"--ignore-no-formats-error",
 		"--no-continue",
 		"--newline",
-		"-o", template,
-		url,
 	}
+	if spec := strings.TrimSpace(jsRuntime); spec != "" {
+		args = append(args, "--js-runtimes", spec)
+	}
+	return append(args, "-o", template, url)
+}
+
+func withPrintToFile(args []string, movedPath, plannedPath string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	url := args[len(args)-1]
+	head := args[:len(args)-1]
+	if strings.TrimSpace(movedPath) != "" {
+		head = append(head, "--print-to-file", "after_move:%(filepath)s", movedPath)
+	}
+	if strings.TrimSpace(plannedPath) != "" {
+		head = append(head, "--print-to-file", "video:%(filepath)s", plannedPath)
+	}
+	return append(head, url)
+}
+
+func collectDownloadedAudio(outputDir, format, ytOutput, movedPath, plannedPath string, newFiles []string) []string {
+	seen := map[string]struct{}{}
+	var files []string
+	add := func(rel string) {
+		rel = strings.TrimSpace(rel)
+		if rel == "" {
+			return
+		}
+		rel = filepath.Clean(rel)
+		if _, ok := seen[rel]; ok {
+			return
+		}
+		if _, err := os.Stat(filepath.Join(outputDir, rel)); err != nil {
+			return
+		}
+		seen[rel] = struct{}{}
+		files = append(files, rel)
+	}
+
+	for _, f := range newFiles {
+		add(f)
+	}
+	for _, p := range readListFile(movedPath) {
+		add(resolveAudioRel(p, outputDir, format))
+	}
+	for _, p := range readListFile(plannedPath) {
+		add(resolveAudioRel(p, outputDir, format))
+	}
+	for _, p := range parseYtDlpDestinations(ytOutput) {
+		add(resolveAudioRel(p, outputDir, format))
+	}
+	sort.Strings(files)
+	return files
+}
+
+func readListFile(path string) []string {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+type ytProgressState struct {
+	item    string
+	percent string
+	file    string
+}
+
+func parseYtDlpProgress(line string, state *ytProgressState) string {
+	line = strings.TrimSpace(line)
+	if line == "" || state == nil {
+		return ""
+	}
+
+	if rest, ok := strings.CutPrefix(line, "[download] Downloading item "); ok {
+		state.item = strings.ReplaceAll(strings.TrimSpace(rest), " of ", "/")
+		state.percent = ""
+		return state.message("Downloading")
+	}
+	if rest, ok := strings.CutPrefix(line, "[download] Destination: "); ok {
+		state.file = filepath.Base(strings.TrimSpace(rest))
+		return state.message("Downloading")
+	}
+	if rest, ok := strings.CutPrefix(line, "[ExtractAudio] Destination: "); ok {
+		state.file = filepath.Base(strings.TrimSpace(rest))
+		state.percent = ""
+		return state.message("Converting")
+	}
+	if strings.HasPrefix(line, "[download]") && strings.Contains(line, "%") {
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "[download]"))
+		if chunk := progressPercentChunk(rest); chunk != "" {
+			state.percent = chunk
+			return state.message("Downloading")
+		}
+	}
+	return ""
+}
+
+func progressPercentChunk(rest string) string {
+	fields := strings.Fields(rest)
+	for i, f := range fields {
+		if !strings.Contains(f, "%") {
+			continue
+		}
+		parts := []string{f}
+		if i+2 < len(fields) && fields[i+1] == "of" {
+			parts = append(parts, "of", fields[i+2])
+		}
+		return strings.Join(parts, " ")
+	}
+	return ""
+}
+
+func (s ytProgressState) message(verb string) string {
+	var b strings.Builder
+	b.WriteString(verb)
+	if s.item != "" {
+		b.WriteString(" ")
+		b.WriteString(s.item)
+	}
+	if s.percent != "" && verb == "Downloading" {
+		b.WriteString(" ")
+		b.WriteString(s.percent)
+	}
+	if s.file != "" {
+		b.WriteString(": ")
+		b.WriteString(s.file)
+	}
+	return b.String()
+}
+
+func parseYtDlpDestinations(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "[ExtractAudio] Destination: "); ok {
+			paths = append(paths, strings.TrimSpace(rest))
+			continue
+		}
+		if strings.HasPrefix(line, "[download] ") && strings.HasSuffix(line, " has already been downloaded") {
+			p := strings.TrimSuffix(strings.TrimPrefix(line, "[download] "), " has already been downloaded")
+			paths = append(paths, strings.TrimSpace(p))
+		}
+	}
+	return paths
+}
+
+func resolveAudioRel(path, outputDir, format string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	format = strings.ToLower(strings.TrimPrefix(format, "."))
+	ext := filepath.Ext(path)
+	baseNoExt := strings.TrimSuffix(filepath.Base(path), ext)
+
+	candidates := []string{path}
+	if format != "" {
+		withFormat := strings.TrimSuffix(path, ext) + "." + format
+		candidates = append(candidates, withFormat, filepath.Join(outputDir, baseNoExt+"."+format))
+	}
+	candidates = append(candidates, filepath.Join(outputDir, filepath.Base(path)))
+
+	for _, c := range candidates {
+		info, err := os.Stat(c)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		rel, err := filepath.Rel(outputDir, c)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		return rel
+	}
+	return ""
 }
 
 func snapshotFiles(dir, format string) (map[string]struct{}, error) {
@@ -320,7 +546,8 @@ func isURL(value string) bool {
 // It tries to match by playlist index in the filename, falling back to position-based matching.
 func (d *Downloader) getTrackMetadata(pm *PlaylistMetadata, filename string, fileIndex int) Metadata {
 	// Try to extract playlist index from filename (format: "N - title.ext")
-	trackIndex := extractPlaylistIndex(filename)
+	extractedIndex := extractPlaylistIndex(filename)
+	trackIndex := extractedIndex
 	if trackIndex <= 0 {
 		// Fall back to file index (1-based)
 		trackIndex = fileIndex + 1
@@ -328,13 +555,88 @@ func (d *Downloader) getTrackMetadata(pm *PlaylistMetadata, filename string, fil
 
 	// Find matching track metadata
 	var trackMeta TrackMetadata
-	if trackIndex > 0 && trackIndex <= len(pm.Tracks) {
-		trackMeta = pm.Tracks[trackIndex-1]
-	} else if len(pm.Tracks) > fileIndex {
+	matchedByTitle := false
+	if extractedIndex > 0 && extractedIndex <= len(pm.Tracks) {
+		trackMeta = pm.Tracks[extractedIndex-1]
+	} else if meta, ok := matchTrackByTitle(pm.Tracks, filename); ok {
+		trackMeta = meta
+		matchedByTitle = true
+		if trackMeta.Position > 0 {
+			trackIndex = trackMeta.Position
+		}
+	} else if extractedIndex <= 0 && len(pm.Tracks) > fileIndex {
 		trackMeta = pm.Tracks[fileIndex]
 	}
 
-	return MergeTrackMetadata(pm.AlbumInfo, trackMeta, trackIndex)
+	meta := MergeTrackMetadata(pm.AlbumInfo, trackMeta, trackIndex)
+	if !matchedByTitle && trackMeta.Title == "" {
+		if title := titleFromFilename(filename); title != "" {
+			meta.Title = title
+		}
+	}
+	return meta
+}
+
+// matchTrackByTitle finds the MusicBrainz track whose title appears in the filename.
+func matchTrackByTitle(tracks []TrackMetadata, filename string) (TrackMetadata, bool) {
+	haystack := normalizeTitle(titleFromFilename(filename))
+	if haystack == "" {
+		return TrackMetadata{}, false
+	}
+
+	best := -1
+	bestLen := 0
+	for i, tr := range tracks {
+		title := normalizeTitle(tr.Title)
+		if title == "" {
+			continue
+		}
+		if haystack == title {
+			if len(title) >= bestLen {
+				best = i
+				bestLen = len(title) + 1 // prefer exact matches
+			}
+			continue
+		}
+		if len(title) < 8 {
+			continue
+		}
+		if strings.Contains(haystack, title) || strings.Contains(title, haystack) {
+			if len(title) > bestLen {
+				best = i
+				bestLen = len(title)
+			}
+		}
+	}
+	if best < 0 {
+		return TrackMetadata{}, false
+	}
+	return tracks[best], true
+}
+
+func titleFromFilename(filename string) string {
+	base := filepath.Base(filename)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	for i, c := range base {
+		if c == ' ' && i > 0 && i+2 < len(base) && base[i+1] == '-' && base[i+2] == ' ' {
+			base = strings.TrimSpace(base[i+3:])
+			break
+		}
+	}
+	return strings.TrimSpace(base)
+}
+
+func normalizeTitle(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else if unicode.IsSpace(r) {
+			b.WriteRune(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // extractPlaylistIndex extracts the playlist index from a filename.

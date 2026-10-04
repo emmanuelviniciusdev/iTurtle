@@ -88,7 +88,7 @@ release:
 
     ## Install
 
-    The installer downloads this release's binary and installs **ffmpeg** and **yt-dlp** if they are missing.
+    The installer downloads this release's binary and installs **ffmpeg**, **yt-dlp**, and **Deno** if they are missing.
 
     **macOS / Linux**
     ```bash

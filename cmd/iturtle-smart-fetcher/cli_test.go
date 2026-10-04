@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"iturtle-smart-fetcher/internal/downloader"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -127,5 +129,22 @@ func TestRunDownloadHelp(t *testing.T) {
 	}
 	if !strings.Contains(got, "-url") {
 		t.Fatalf("download help missing -url: %s", got)
+	}
+}
+
+func TestPrintMusicBrainzFound(t *testing.T) {
+	var buf bytes.Buffer
+	printMusicBrainzFound(&buf, &downloader.PlaylistMetadata{
+		AlbumInfo: downloader.AlbumMetadata{
+			Artist: "Paramore",
+			Title:  "Brand New Eyes",
+			Year:   "2009",
+		},
+		Tracks: make([]downloader.TrackMetadata, 14),
+	})
+	got := buf.String()
+	want := "🎵 Found on MusicBrainz: Paramore - Brand New Eyes (2009)\n   14 tracks\n\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

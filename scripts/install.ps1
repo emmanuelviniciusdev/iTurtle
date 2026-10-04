@@ -1,4 +1,5 @@
-# Install the pre-built iTurtle.exe from GitHub Releases, plus ffmpeg and yt-dlp.
+# Install the pre-built iTurtle.exe from GitHub Releases, plus ffmpeg, yt-dlp, and Deno.
+# Deno is required by current yt-dlp to solve YouTube JavaScript challenges.
 # Usage: irm https://raw.githubusercontent.com/emmanuelviniciusdev/iTurtle/main/scripts/install.ps1 | iex
 [CmdletBinding()]
 param(
@@ -65,33 +66,83 @@ function Normalize-Tag {
     return $Tag
 }
 
+function Install-DenoStandalone {
+    param([string]$DestDir)
+    $arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else { $null }
+    if (-not $arch) {
+        throw "32-bit Windows is not supported for Deno. Install Deno from https://deno.com and re-run this script."
+    }
+    $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("iturtle-deno-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    try {
+        $zipPath = Join-Path $tmp "deno.zip"
+        Write-Log "downloading standalone Deno"
+        Invoke-GitHubGet -Uri $url -OutFile $zipPath
+        Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
+        $exe = Join-Path $tmp "deno.exe"
+        if (-not (Test-Path $exe)) {
+            throw "Deno archive did not contain deno.exe"
+        }
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+        Copy-Item -Path $exe -Destination (Join-Path $DestDir "deno.exe") -Force
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-RuntimeDeps {
     $missing = @()
     if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $missing += "ffmpeg" }
     if (-not (Get-Command yt-dlp -ErrorAction SilentlyContinue)) { $missing += "yt-dlp" }
+    if (-not (Get-Command deno -ErrorAction SilentlyContinue)) { $missing += "deno" }
     if ($missing.Count -eq 0) {
-        Write-Log "ffmpeg and yt-dlp already on PATH"
+        Write-Log "ffmpeg, yt-dlp, and deno already on PATH"
         return
     }
 
     Write-Log "installing missing runtime tools: $($missing -join ', ')"
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     $choco = Get-Command choco -ErrorAction SilentlyContinue
-    if (-not $winget -and -not $choco) {
-        throw "ffmpeg/yt-dlp are missing and neither winget nor Chocolatey was found. Install one of them, or install ffmpeg and yt-dlp manually."
-    }
 
     $wingetIds = @{
         "ffmpeg" = "Gyan.FFmpeg"
         "yt-dlp" = "yt-dlp.yt-dlp"
+        "deno"   = "Deno.Deno"
     }
 
-    foreach ($name in $missing) {
-        if ($winget) {
-            & winget install --id $wingetIds[$name] -e --accept-package-agreements --accept-source-agreements
-        } else {
-            & choco install $name -y
+    $pkgMissing = @($missing | Where-Object { $_ -ne "deno" })
+    if ($pkgMissing.Count -gt 0) {
+        if (-not $winget -and -not $choco) {
+            throw "ffmpeg/yt-dlp are missing and neither winget nor Chocolatey was found. Install one of them, or install ffmpeg and yt-dlp manually."
         }
+        foreach ($name in $pkgMissing) {
+            if ($winget) {
+                & winget install --id $wingetIds[$name] -e --accept-package-agreements --accept-source-agreements
+            } else {
+                & choco install $name -y
+            }
+        }
+    }
+
+    if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
+        try {
+            if ($winget) {
+                & winget install --id $wingetIds["deno"] -e --accept-package-agreements --accept-source-agreements
+            } elseif ($choco) {
+                & choco install deno -y
+            }
+        } catch {
+            Write-Log "package manager could not install Deno; trying standalone binary"
+        }
+        if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
+            Install-DenoStandalone -DestDir $Prefix
+            $env:Path = "$Prefix;$env:Path"
+        }
+    }
+
+    if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
+        throw "deno is still not on PATH after installation. Install Deno from https://deno.com and re-run this script."
     }
 }
 

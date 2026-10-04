@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install the pre-built iTurtle binary from GitHub Releases, plus ffmpeg and yt-dlp.
-# Runtime tools are installed as standalone binaries so macOS does not compile
-# MacPorts' full ffmpeg tree (cairo, Python, openssl3, ...).
+# Install the pre-built iTurtle binary from GitHub Releases, plus ffmpeg, yt-dlp,
+# and Deno. Runtime tools are installed as standalone binaries so macOS does not
+# compile MacPorts' full ffmpeg tree (cairo, Python, openssl3, ...).
+# Deno is required by current yt-dlp to solve YouTube JavaScript challenges.
 set -euo pipefail
 
 REPO="${ITURTLE_REPO:-emmanuelviniciusdev/iTurtle}"
@@ -30,7 +31,7 @@ download() {
   fi
 }
 
-# Visible progress for large runtime binaries (ffmpeg/yt-dlp).
+# Visible progress for large runtime binaries (ffmpeg/yt-dlp/deno).
 download_bin() {
   local dest="$1" url="$2"
   if [[ -n "${GITHUB_TOKEN:-}" && "${url}" == *github.com* ]]; then
@@ -201,6 +202,23 @@ install_ytdlp_standalone() {
   install_named_bin "${src}" "yt-dlp"
 }
 
+deno_zip_url() {
+  case "$(detect_os)_$(detect_arch)" in
+    darwin_amd64) printf '%s\n' "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip" ;;
+    darwin_arm64) printf '%s\n' "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip" ;;
+    linux_amd64) printf '%s\n' "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip" ;;
+    linux_arm64) printf '%s\n' "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-unknown-linux-gnu.zip" ;;
+    *) return 1 ;;
+  esac
+}
+
+install_deno_standalone() {
+  local tmpdir="$1" url
+  url="$(deno_zip_url)" || return 1
+  log "downloading standalone Deno"
+  install_zipped_bin "${url}" "deno" "${tmpdir}"
+}
+
 install_ffmpeg_standalone() {
   local tmpdir="$1"
   local ffmpeg_url ffprobe_url urls
@@ -261,6 +279,7 @@ install_standalone_tools() {
     case "${need}" in
       yt-dlp) install_ytdlp_standalone "${dep_tmp}" || true ;;
       ffmpeg) install_ffmpeg_standalone "${dep_tmp}" || true ;;
+      deno) install_deno_standalone "${dep_tmp}" || true ;;
     esac
   done
   rm -rf "${dep_tmp}"
@@ -270,14 +289,36 @@ refresh_missing() {
   missing=()
   command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
   command -v yt-dlp >/dev/null 2>&1 || missing+=(yt-dlp)
+  command -v deno >/dev/null 2>&1 || missing+=(deno)
+}
+
+# Distro repos often lack Deno or ship an old build. Always prefer the official zip.
+install_deno_if_missing() {
+  command -v deno >/dev/null 2>&1 && return 0
+  log "installing Deno (yt-dlp needs it for YouTube)"
+  local dep_tmp
+  dep_tmp="$(mktemp -d)"
+  if ! install_deno_standalone "${dep_tmp}"; then
+    if [[ "$(detect_os)" == "darwin" ]]; then
+      log "standalone Deno download failed; trying Homebrew"
+      install_from_package_manager deno || true
+    fi
+  fi
+  rm -rf "${dep_tmp}"
 }
 
 install_runtime_deps() {
   local missing=()
   export PATH="${PREFIX}:${PATH}"
+
+  # Deno first. Current yt-dlp needs a JS runtime for YouTube, and Linux
+  # package repos often do not ship a recent enough Deno.
+  install_deno_if_missing
+  command -v deno >/dev/null 2>&1 || err "deno is still not on PATH after installation. Install Deno from https://deno.com and re-run this script."
+
   refresh_missing
   if [[ ${#missing[@]} -eq 0 ]]; then
-    log "ffmpeg and yt-dlp already on PATH"
+    log "ffmpeg, yt-dlp, and deno already on PATH"
     return 0
   fi
 
@@ -292,7 +333,7 @@ install_runtime_deps() {
       if [[ ${#missing[@]} -ne 0 ]]; then
         log "standalone download incomplete; trying Homebrew for: ${missing[*]}"
         install_from_package_manager "${missing[@]}" || \
-          err "could not install ${missing[*]} as standalone binaries, and Homebrew was not found. Install ffmpeg and yt-dlp manually (brew install ffmpeg yt-dlp)."
+          err "could not install ${missing[*]} as standalone binaries, and Homebrew was not found. Install ffmpeg, yt-dlp, and deno manually (brew install ffmpeg yt-dlp deno)."
       fi
       ;;
     linux)
@@ -305,6 +346,7 @@ install_runtime_deps() {
 
   command -v ffmpeg >/dev/null 2>&1 || err "ffmpeg is still not on PATH after installation"
   command -v yt-dlp >/dev/null 2>&1 || err "yt-dlp is still not on PATH after installation"
+  command -v deno >/dev/null 2>&1 || err "deno is still not on PATH after installation. Install Deno from https://deno.com and re-run this script."
 }
 
 main() {
