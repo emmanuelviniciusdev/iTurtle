@@ -33,6 +33,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "download":
 		return runDownload(args[1:], stdout, stderr)
+	case "generate":
+		return runGenerate(args[1:], stdout, stderr)
 	case "about":
 		printAboutTo(stdout)
 		return 0
@@ -57,6 +59,7 @@ Usage:
 
 Commands:
   download    Download and tag music from YouTube
+  generate    Generate an example file
   about       What iTurtle does and who created it
   version     Print the current version
   help        Show this help
@@ -69,25 +72,98 @@ Examples:
 
   iTurtle download -url "..." -auto-fetch-metadata "Black Kids - Partie Traumatic"
 
-  iTurtle download -config albums.yaml
+  iTurtle download -config albums.yml
 
-  iTurtle download -example-config > albums.yaml
+  iTurtle generate albums.yml
 
   iTurtle version
   iTurtle about
 `)
 }
 
+func printGenerateUsage(w io.Writer) {
+	fmt.Fprintf(w, `iTurtle generate - generate an example file
+
+Usage:
+  iTurtle generate <name>
+
+Available:
+  albums.yml    Example batch configuration file
+`)
+}
+
+func runGenerate(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		printGenerateUsage(stderr)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		printGenerateUsage(stderr)
+		return 1
+	}
+	if len(rest) > 1 {
+		fmt.Fprintf(stderr, "❌ generate accepts exactly one name\n\n")
+		printGenerateUsage(stderr)
+		return 2
+	}
+
+	name := strings.TrimSpace(rest[0])
+	if name == "" {
+		printGenerateUsage(stderr)
+		return 1
+	}
+	content, ok := generateContents(name)
+	if !ok {
+		fmt.Fprintf(stderr, "❌ unknown generate target %q\n\n", rest[0])
+		printGenerateUsage(stderr)
+		return 2
+	}
+
+	if _, err := os.Stat(name); err == nil {
+		fmt.Fprintf(stderr, "❌ %s already exists\n", name)
+		return 1
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "❌ %v\n", err)
+		return 1
+	}
+
+	if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+		fmt.Fprintf(stderr, "❌ Failed to write %s: %v\n", name, err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "🐢 Generated %s\n", name)
+	return 0
+}
+
+func generateContents(name string) (string, bool) {
+	switch name {
+	case "albums.yml":
+		return config.Example(), true
+	default:
+		return "", false
+	}
+}
+
 func runDownload(args []string, stdout, stderr io.Writer) int {
 	var cfg downloader.Config
 	var (
-		ytDLPPath       string
-		ffmpegPath      string
-		jsRuntimePath   string
-		configFile      string
-		musicBrainzID   string
-		autoFetchQuery  string
-		showExampleConf bool
+		ytDLPPath      string
+		ffmpegPath     string
+		jsRuntimePath  string
+		configFile     string
+		musicBrainzID  string
+		autoFetchQuery string
 	)
 
 	fs := flag.NewFlagSet("download", flag.ContinueOnError)
@@ -113,7 +189,6 @@ func runDownload(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&configFile, "config", "", "Path to YAML batch configuration file")
 	fs.StringVar(&musicBrainzID, "musicbrainz-id", "", "MusicBrainz release ID to fetch metadata")
 	fs.StringVar(&autoFetchQuery, "auto-fetch-metadata", "", "Auto-search MusicBrainz (format: \"Artist - Album\")")
-	fs.BoolVar(&showExampleConf, "example-config", false, "Print example configuration file and exit")
 
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "iTurtle download - download and tag music from YouTube\n\n")
@@ -128,9 +203,7 @@ Examples:
 
   iTurtle download -url "..." -auto-fetch-metadata "Black Kids - Partie Traumatic"
 
-  iTurtle download -config albums.yaml
-
-  iTurtle download -example-config > albums.yaml
+  iTurtle download -config albums.yml
 `)
 	}
 
@@ -139,11 +212,6 @@ Examples:
 			return 0
 		}
 		return 2
-	}
-
-	if showExampleConf {
-		fmt.Fprint(stdout, config.Example())
-		return 0
 	}
 
 	if configFile == "" && strings.TrimSpace(cfg.URL) == "" {

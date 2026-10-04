@@ -1,6 +1,4 @@
-![floating-turtles](floating-turtles.jpg)
-
-*Artwork credit: [#218 Bubbles](https://angelasdailyturtle.blogspot.com/2011/08/218-bubbles.html) from [The Daily Turtle](https://angelasdailyturtle.blogspot.com/).*
+![tortoise-dance](tortoise-dance.gif)
 
 # iTurtle
 
@@ -157,13 +155,13 @@ Want to download multiple albums while you step away? Create a list and let iTur
 First, create a starter file:
 
 ```bash
-iTurtle download -example-config > albums.yaml
+iTurtle generate albums.yml
 ```
 
-Next, list your albums in `albums.yaml`:
+Next, list your albums in `albums.yml`:
 
 ```yaml
-# albums.yaml
+# albums.yml
 albums:
   # Album 1: Partie Traumatic with custom track titles
   - url: "https://www.youtube.com/playlist?list=PL_BLACK_KIDS_PARTIE_TRAUMATIC"
@@ -198,7 +196,7 @@ albums:
 Finally, start the batch run:
 
 ```bash
-iTurtle download -config albums.yaml
+iTurtle download -config albums.yml
 ```
 
 
@@ -206,6 +204,9 @@ iTurtle download -config albums.yaml
 ### 7. Handy Quick Commands
 
 ```bash
+# Generate a starter albums.yml
+iTurtle generate albums.yml
+
 # Check the installed version
 iTurtle version
 

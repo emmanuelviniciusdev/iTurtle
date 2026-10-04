@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -47,9 +48,11 @@ func TestRunHelp(t *testing.T) {
 	for _, want := range []string{
 		"iTurtle <command> [parameters]",
 		"download    Download and tag music from YouTube",
+		"generate    Generate an example file",
 		"about       What iTurtle does and who created it",
 		"version     Print the current version",
 		"iTurtle download -url",
+		"iTurtle generate albums.yml",
 		"iTurtle version",
 		"iTurtle about",
 	} {
@@ -102,18 +105,92 @@ func TestRunDownloadRequiresURL(t *testing.T) {
 	}
 }
 
-func TestRunDownloadExampleConfig(t *testing.T) {
+func TestRunGenerate(t *testing.T) {
+	t.Chdir(t.TempDir())
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"download", "-example-config"}, &stdout, &stderr)
+	code := run([]string{"generate", "albums.yml"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
 	}
-	got := stdout.String()
-	if !strings.Contains(got, "albums:") {
-		t.Fatalf("example config missing albums:\n%s", got)
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
-	if !strings.Contains(got, "musicbrainz_id") {
-		t.Fatalf("example config missing musicbrainz_id:\n%s", got)
+	if !strings.Contains(stdout.String(), "albums.yml") {
+		t.Fatalf("stdout missing generated name: %q", stdout.String())
+	}
+
+	got, err := os.ReadFile("albums.yml")
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	body := string(got)
+	if !strings.Contains(body, "albums:") {
+		t.Fatalf("example config missing albums:\n%s", body)
+	}
+	if !strings.Contains(body, "musicbrainz_id") {
+		t.Fatalf("example config missing musicbrainz_id:\n%s", body)
+	}
+}
+
+func TestRunGenerateRequiresName(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"generate"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "iTurtle generate <name>") {
+		t.Fatalf("stderr missing generate usage: %s", stderr.String())
+	}
+}
+
+func TestRunGenerateUnknownTarget(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"generate", "not-a-thing"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `unknown generate target "not-a-thing"`) {
+		t.Fatalf("stderr missing unknown target: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "albums.yml") {
+		t.Fatalf("stderr missing available targets: %s", stderr.String())
+	}
+}
+
+func TestRunGenerateExistingFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("albums.yml", []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"generate", "albums.yml"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "already exists") {
+		t.Fatalf("stderr missing exists error: %s", stderr.String())
+	}
+	got, err := os.ReadFile("albums.yml")
+	if err != nil {
+		t.Fatalf("read existing file: %v", err)
+	}
+	if string(got) != "keep me" {
+		t.Fatalf("existing file was overwritten: %q", got)
+	}
+}
+
+func TestRunGenerateHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"generate", "-h"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "iTurtle generate <name>") {
+		t.Fatalf("generate help missing usage: %s", got)
+	}
+	if !strings.Contains(got, "albums.yml") {
+		t.Fatalf("generate help missing albums.yml: %s", got)
 	}
 }
 
